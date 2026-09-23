@@ -49,7 +49,13 @@ typedef enum {
     ScanStateFailed
 } ScanState;
 
-typedef enum { ViewSubmenu, ViewSettings, ViewAbout, ViewScan, ViewPlayback } AppView;
+typedef enum {
+    ViewSubmenu,
+    ViewSettings,
+    ViewAbout,
+    ViewScan,
+    ViewPlayback
+} AppView;
 
 typedef struct {
     Gui* gui;
@@ -99,7 +105,7 @@ typedef struct {
 
 // Playback view model
 typedef struct {
-    char name[64];     // currently emulated card name
+    char name[64];     // currently emulated card name (now the ID)
     uint8_t index;     // 1-based for display
     uint8_t count;     // total files
     bool confirm;      // delete confirmation dialog visible
@@ -232,21 +238,18 @@ static void playback_view_draw_cb(Canvas* canvas, void* ctx) {
         return;
     }
 
-    // Counter in the top right corner, right-aligned
     char pos[20];
     snprintf(pos, sizeof(pos), "%u/%u", model->index, model->count);
     canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, pos);
 
-    // Emulation status. Emulation answers a reader's field, like a real card.
     if(model->emu_failed) {
         canvas_draw_str(canvas, 8, 32, "Emulation error:");
         canvas_draw_str(canvas, 8, 44, model->emu_error);
     } else {
         canvas_draw_str(canvas, 8, 32, "Emulating:");
-        canvas_draw_str(canvas, 8, 44, model->name);
+        canvas_draw_str(canvas, 8, 44, model->name);  // now shows the card ID
     }
 
-    // Soft buttons: cycle on the sides, delete centered at the bottom
     elements_button_left(canvas, "Prev");
     elements_button_right(canvas, "Next");
     elements_button_center(canvas, "Delete");
@@ -371,16 +374,12 @@ static void playback_stop_emulation(App* app) {
     }
 }
 
-// Load the file at file_index and start emulating it.
-// Uses the SDK's own .nfc parser (NfcDevice) — same path the stock NFC
-// app takes before emulating — instead of hand-building the structs.
 static bool playback_start_emulation(App* app) {
     char path[128];
     snprintf(path, sizeof(path), "%s/%s.nfc", FOLDER, app->files[app->file_index]);
 
     playback_stop_emulation(app);
 
-    // Parse the dump with the firmware's own loader
     app->emu_device = nfc_device_alloc();
     if(!app->emu_device) {
         playback_view_set_emu_error(app, "device alloc failed");
@@ -396,7 +395,6 @@ static bool playback_start_emulation(App* app) {
         return false;
     }
 
-    // Verify it is the protocol we can emulate
     NfcProtocol protocol = nfc_device_get_protocol(app->emu_device);
     if(protocol != NfcProtocolMfUltralight) {
         FURI_LOG_E(TAG, "emu: wrong protocol %d", protocol);
@@ -423,7 +421,6 @@ static bool playback_start_emulation(App* app) {
         data->pages_total,
         data->iso14443_3a_data->uid_len);
 
-    // Start emulation with the properly parsed data (listener copies it)
     FURI_LOG_I(TAG, "emu: listener_alloc");
     app->listener = nfc_listener_alloc(app->nfc, NfcProtocolMfUltralight, data);
     if(!app->listener) {
@@ -465,7 +462,7 @@ static int32_t playback_worker(void* ctx) {
             if(playback_start_emulation(app)) {
                 playback_view_set(
                     app,
-                    app->files[app->file_index],
+                    app->files[app->file_index],   // file name = card ID
                     app->file_index + 1,
                     app->file_count,
                     false,
@@ -548,19 +545,13 @@ static bool app_navigation_cb(void* ctx) {
 }
 
 #if ENABLE_WORKER
-// ---------------------------------------------------------------- Name extraction
-static bool extract_name(const uint8_t pages[TOTAL_PAGES][4], char* out, size_t out_len) {
-    size_t len = 0;
-    for(int p = NAME_START_PAGE; p <= NAME_END_PAGE && len < out_len - 1; p++) {
-        for(int b = 0; b < 4; b++) {
-            uint8_t c = pages[p][b];
-            if(c == 0x00) continue;
-            if(c < 0x20 || c > 0x7E) continue;
-            out[len++] = (char)c;
-        }
-    }
-    out[len] = '\0';
-    return len > 0;
+// ---------------------------------------------------------------- Card ID naming
+// Build the card ID from page 12 bytes 0-1, formatted as uppercase hex in
+// file byte order: Bill -> "D08C", Angy Bill -> "5CF9", Tina -> "1553".
+static void make_card_id(App* app) {
+    uint8_t b0 = tag_data.pages[12][0];
+    uint8_t b1 = tag_data.pages[12][1];
+    snprintf(app->name, sizeof(app->name), "%02X%02X", b0, b1);
 }
 
 static void sanitize(const char* in, char* out, size_t out_len) {
@@ -761,13 +752,10 @@ static int32_t scan_worker(void* ctx) {
             continue;
         }
 
-        if(!extract_name(tag_data.pages, app->name, sizeof(app->name))) {
-            strlcpy(app->status, "no name found on card", sizeof(app->status));
-            scan_view_set_state(app, ScanStateFailed);
-            wait_for_card_removal(app);
-            continue;
-        }
+        // Build the file name from the card ID (page 12 bytes 0-1) instead of ASCII
+        make_card_id(app);
 
+        // Sanitize and build the path (IDs are already clean hex, but guard anyway)
         char safe[64];
         sanitize(app->name, safe, sizeof(safe));
         if(safe[0] == '\0') strlcpy(safe, "unnamed", sizeof(safe));
