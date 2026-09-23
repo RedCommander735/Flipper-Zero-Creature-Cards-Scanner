@@ -924,8 +924,8 @@ int32_t creature_scanner_app(void* p) {
         16,
         128,
         48,
-        "Creature Scanner v1.0\nScans NTAG216 creature cards and saves them to the "
-        "SD card, auto-named from the data on the card.\nSaves to:\n/ext/nfc/creatures\n"
+        "Creature Scanner v1.0\n\nScans NTAG216 creature cards and saves them to the "
+        "SD card, auto-named from the data on the card.\nSlow mode prompts before each save.\n\nSaves to:\n/ext/nfc/creatures\n\n"
         "Playback emulates saved cards.");
     view_dispatcher_add_view(
         app.view_dispatcher, ViewAbout, widget_get_view(app.widget_about));
